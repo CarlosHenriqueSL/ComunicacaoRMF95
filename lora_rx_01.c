@@ -1,72 +1,100 @@
-/* EMBARCATECH - INTRODUÇÃO AO PROTOCOLO LORA - CAPÍTULO 3 / PARTE 4
- * Receptor LoRa (TX) - BitDogLAB
- * Comunicação com módulo LoRa (Heltec WiFi LoRa 32 V3.2) via protocolo UART para recepção de informações.
- * Prof: Ricardo Prates
- */
-
 #include <stdio.h>
 #include "pico/stdlib.h"
+#include "hardware/spi.h"
 
-#define UART_ID uart1 // Seleciona a UART0
-#define BAUD_RATE 115200 // Define a taxa de transmissão
-#define UART_TX_PIN 8 // Pino GPIO usado para TX
-#define UART_RX_PIN 9 // Pino GPIO usado para RX
-#define LED_PIN 11 // Pino GPIO usado para o LED
+// Definições dos pinos
+#define SPI_PORT spi0
+#define PIN_MISO 16
+#define PIN_CS   17
+#define PIN_SCK  18
+#define PIN_MOSI 19
+#define PIN_RST  20 // Pino de RESET do RFM95
 
-// Função Principal
+// Endereços dos Registradores do RFM95
+#define REG_OP_MODE 0x01
+#define REG_VERSION 0x42
+
+// Função de Reset do Módulo
+void rmf95_reset() {
+    // Garante que o pino de reset esteja em estado alto (não resetado)
+    gpio_put(PIN_RST, 1);
+    sleep_ms(1);
+    // Pulso de reset: baixo por um curto período e depois alto
+    gpio_put(PIN_RST, 0);
+    sleep_ms(1);
+    gpio_put(PIN_RST, 1);
+    sleep_ms(5); // Aguarda o módulo estabilizar após o reset
+}
+
+// Função para escrever em um registrador
+void rmf95_write_reg(uint8_t reg, uint8_t value) {
+    uint8_t tx_data[] = { reg | 0x80, value }; // MSB=1 para escrita
+
+    gpio_put(PIN_CS, 0); // Ativa o chip select
+    spi_write_blocking(SPI_PORT, tx_data, 2);
+    gpio_put(PIN_CS, 1); // Desativa o chip select
+}
+
+// Função para ler um registrador
+uint8_t rmf95_read_reg(uint8_t reg) {
+    uint8_t tx_data[] = { reg & 0x7F, 0x00 }; // MSB=0 para leitura, 0x00 é um byte dummy
+    uint8_t rx_data[2];
+
+    gpio_put(PIN_CS, 0); // Ativa o chip select
+    spi_write_read_blocking(SPI_PORT, tx_data, rx_data, 2);
+    gpio_put(PIN_CS, 1); // Desativa o chip select
+
+    return rx_data[1]; // O segundo byte recebido contém o valor do registrador
+}
+
 int main() {
-
-    // Inicializa a biblioteca padrão
     stdio_init_all();
+    sleep_ms(2000); // Um tempo para o terminal serial conectar
+    printf("Iniciando comunicacao com RFM95...\n");
 
-    // Inicializa a UART
-    uart_init(UART_ID, BAUD_RATE);
+    // 1. Inicializa o SPI
+    spi_init(SPI_PORT, 500 * 1000); // 500 kHz é uma velocidade segura para começar
+    gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
+    gpio_set_function(PIN_SCK,  GPIO_FUNC_SPI);
+    gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
 
-    // Configura os pinos GPIO para a UART
-    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART); // Configura o pino 0 para TX
-    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART); // Configura o pino 1 para RX
+    // Configura o modo SPI (Modo 0: CPOL=0, CPHA=0)
+    spi_set_format(SPI_PORT, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
 
-    // Configura o pino do LED
-    gpio_init(LED_PIN);
-    gpio_set_dir(LED_PIN, GPIO_OUT);
+    // 2. Inicializa o pino Chip Select (CS)
+    gpio_init(PIN_CS);
+    gpio_set_dir(PIN_CS, GPIO_OUT);
+    gpio_put(PIN_CS, 1); // CS em estado alto (desativado)
 
-    char buffer[100];  // Buffer para armazenar a mensagem
-    int index = 0;     // Índice para armazenar caracteres no buffer
+    // 3. Inicializa e controla o pino de RESET
+    gpio_init(PIN_RST);
+    gpio_set_dir(PIN_RST, GPIO_OUT);
+    sleep_ms(10000);
+    
+    // Reseta o módulo
+    rmf95_reset();
+    
+    // Testa a comunicação lendo o registrador de versão
+    // O valor esperado para um RFM95/SX1276 é 0x12
+    uint8_t version = rmf95_read_reg(REG_VERSION);
+    printf("Versao do RFM95: 0x%02X\n", version);
 
-    // Loop principal
+    if (version == 0x12) {
+        printf("Comunicacao SPI com RFM95 OK! ✅\n");
+    } else {
+        printf("Falha na comunicacao SPI. ❌\n");
+        printf("Verifique a fiacao, alimentacao e o pino de reset.\n");
+        // Trava aqui se a comunicação falhar
+        while(1);
+    }
+    
+    // Coloca o rádio em modo LoRa e Sleep para começar
+    rmf95_write_reg(REG_OP_MODE, 0x80);
+
     while (1) {
-        
-        // Verifica se há dados disponíveis para leitura
-        if (uart_is_readable(UART_ID)) {
-            // Lê o caractere recebido
-            char c = uart_getc(UART_ID);
-
-            // Adiciona o caractere ao buffer se não for '\n'
-            if (c != '\n') {
-                buffer[index++] = c;
-
-                // Garante que o índice não ultrapasse o tamanho do buffer
-                if (index >= sizeof(buffer) - 1) {
-                    index = 0; // Reinicia o índice se o buffer estiver cheio
-                }
-            } else {
-                // Termina a string e processa a mensagem
-                buffer[index] = '\0';
-                index = 0; // Reinicia o índice para a próxima mensagem
-
-                // Exibe a mensagem recebida
-                printf("Mensagem recebida: %s\n", buffer);
-
-                // Pisca o LED para indicar recebimento
-                gpio_put(LED_PIN, 1);
-                sleep_ms(50);
-                gpio_put(LED_PIN, 0);
-                sleep_ms(50);
-            }
-        }
-
-        // Pequeno atraso para evitar sobrecarga no loop principal
-        sleep_ms(10);
+        uint8_t opmode = rmf95_read_reg(REG_OP_MODE);
+        printf("RegOpMode: 0x%02X\n", opmode);
+        sleep_ms(1000);
     }
 
     return 0;

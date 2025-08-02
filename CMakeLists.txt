@@ -55,7 +55,7 @@ target_include_directories(lora_rx_01 PRIVATE
 
 # Add any user requested libraries
 target_link_libraries(lora_rx_01 
-        
+        hardware_spi
         )
 
 pico_add_extra_outputs(lora_rx_01)
